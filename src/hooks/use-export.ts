@@ -1,6 +1,18 @@
 "use client";
 
+/**
+ * 导出功能 Hook
+ * 
+ * 提供将旅行计划导出为 PNG 图片和 PDF 文件的功能。
+ * 使用动态导入方式加载导出依赖，减少首屏加载体积。
+ */
 export function useExport() {
+  /**
+   * 将指定 DOM 元素导出为 PNG 图片
+   * 
+   * @param elementId 要导出的 DOM 元素 ID
+   * @param filename 导出文件的名称（不含扩展名）
+   */
   const exportAsPNG = async (elementId: string, filename = "trip-plan") => {
     const element = document.getElementById(elementId);
     if (!element) {
@@ -17,12 +29,19 @@ export function useExport() {
       useCORS: true,
     });
 
+    // 创建下载链接并触发下载
     const link = document.createElement("a");
     link.download = `${filename}.png`;
     link.href = canvas.toDataURL("image/png");
     link.click();
   };
 
+  /**
+   * 将指定 DOM 元素导出为 PDF 文件
+   * 
+   * @param elementId 要导出的 DOM 元素 ID
+   * @param filename 导出文件的名称（不含扩展名）
+   */
   const exportAsPDF = async (elementId: string, filename = "trip-plan") => {
     const element = document.getElementById(elementId);
     if (!element) {
@@ -44,6 +63,7 @@ export function useExport() {
 
     const imgData = canvas.toDataURL("image/png");
     const pdf = new jsPDF({
+      // 根据画布宽高比决定方向
       orientation: canvas.width > canvas.height ? "landscape" : "portrait",
       unit: "px",
       format: [canvas.width / 2, canvas.height / 2],

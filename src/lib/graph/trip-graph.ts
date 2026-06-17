@@ -12,39 +12,54 @@ import {
 import { createLogger } from "@/lib/logger";
 import type { Attraction, Hotel, WeatherInfo, TripPlan, TripRequest, Meal } from "@/types";
 
+/** 日志记录器实例 */
 const logger = createLogger("TripGraph");
 
 // ==================== State 定义 ====================
 
+/**
+ * TripState - LangGraph 工作流的状态定义
+ * 
+ * 状态是工作流执行过程中传递的数据载体，包含所有需要在节点间共享的信息。
+ * 使用 Annotation 定义每个字段的 reducer 策略和默认值。
+ */
 const TripState = Annotation.Root({
+  /** 执行日志消息列表，用于跟踪工作流进度 */
   messages: Annotation<string[]>({
     reducer: (a, b) => [...(a || []), ...(b || [])],
     default: () => [],
   }),
+  /** 用户的旅行请求参数 */
   tripRequest: Annotation<TripRequest | null>({
     reducer: (_, b) => b,
     default: () => null,
   }),
+  /** 搜索到的景点列表 */
   attractions: Annotation<Attraction[]>({
     reducer: (_, b) => b,
     default: () => [],
   }),
+  /** 搜索到的酒店列表 */
   hotels: Annotation<Hotel[]>({
     reducer: (_, b) => b,
     default: () => [],
   }),
+  /** 天气信息列表 */
   weather: Annotation<WeatherInfo[]>({
     reducer: (_, b) => b,
     default: () => [],
   }),
+  /** 生成的旅行计划 */
   tripPlan: Annotation<TripPlan | null>({
     reducer: (_, b) => b,
     default: () => null,
   }),
+  /** 错误信息，如果执行过程中发生错误 */
   error: Annotation<string | null>({
     reducer: (_, b) => b,
     default: () => null,
   }),
+  /** 当前执行阶段：idle -> parsed -> attractions_done -> weather_done -> hotels_done -> planning_done -> completed */
   stage: Annotation<string>({
     reducer: (_, b) => b,
     default: () => "idle",
@@ -53,10 +68,20 @@ const TripState = Annotation.Root({
 
 // ==================== LLM 实例（模块级单例） ====================
 
+/** LLM 实例缓存，避免重复创建 */
 let llmInstance: ChatOpenAI | null = null;
 
+/**
+ * 获取 LLM 实例（单例模式）
+ * 
+ * 使用单例模式确保整个应用中只有一个 LLM 实例，减少资源消耗。
+ * 从环境变量读取配置参数。
+ * 
+ * @returns ChatOpenAI 实例
+ */
 function getLLM(): ChatOpenAI {
   if (llmInstance) return llmInstance;
+  
   llmInstance = new ChatOpenAI({
     modelName: process.env.OPENAI_MODEL || "gpt-4o",
     temperature: 0.7,
@@ -66,11 +91,18 @@ function getLLM(): ChatOpenAI {
       baseURL: process.env.OPENAI_BASE_URL,
     },
   });
+  
   return llmInstance;
 }
 
 // ==================== 城市坐标映射（降级方案用） ====================
 
+/**
+ * 预设的城市坐标映射表
+ * 
+ * 当 MCP 工具调用失败时，使用此映射表获取城市坐标作为降级方案。
+ * 包含国内主要旅游城市的经纬度。
+ */
 const CITY_COORDS: Record<string, { longitude: number; latitude: number }> = {
   北京: { longitude: 116.4074, latitude: 39.9042 },
   上海: { longitude: 121.4737, latitude: 31.2304 },
@@ -94,35 +126,70 @@ const CITY_COORDS: Record<string, { longitude: number; latitude: number }> = {
   拉萨: { longitude: 91.1721, latitude: 29.6562 },
 };
 
+/**
+ * 获取城市坐标
+ * 
+ * 支持多种匹配方式：精确匹配、模糊匹配（去掉市/省/自治区后缀）、部分匹配。
+ * 如果均未匹配到，返回默认坐标（北京天安门附近）。
+ * 
+ * @param city 城市名称
+ * @returns 经纬度坐标对象
+ */
 function getCityCoord(city: string): { longitude: number; latitude: number } {
   // 精确匹配
   if (CITY_COORDS[city]) return CITY_COORDS[city];
+  
   // 模糊匹配（去掉"市"后缀）
   const trimmed = city.replace(/[市省自治区]$/, "");
   if (CITY_COORDS[trimmed]) return CITY_COORDS[trimmed];
+  
   // 部分匹配
   for (const [key, coord] of Object.entries(CITY_COORDS)) {
     if (city.includes(key) || key.includes(trimmed)) return coord;
   }
-  // 兜底：默认坐标
+  
+  // 兜底：默认坐标（北京天安门）
   return { longitude: 116.397128, latitude: 39.916527 };
 }
 
 // ==================== 工具函数 ====================
 
+/**
+ * 从文本中提取 JSON 内容
+ * 
+ * 处理 LLM 返回的响应，支持两种格式：
+ * 1. 带代码块标记的 JSON：```json ... ```
+ * 2. 直接的 JSON 对象或数组
+ * 
+ * @param text 包含 JSON 的文本
+ * @returns 提取出的 JSON 字符串
+ */
 function extractJSON(text: string): string {
   const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || text.match(/(\[[\s\S]*\]|\{[\s\S]*\})/);
   return jsonMatch ? jsonMatch[1].trim() : text.trim();
 }
 
+/**
+ * 安全解析 JSON
+ * 
+ * 封装 JSON.parse，提供错误处理和类型验证。
+ * 如果解析失败或类型不匹配，返回 fallback 值。
+ * 
+ * @param text 待解析的文本
+ * @param fallback 解析失败时的默认返回值
+ * @param expectedKeys 期望的对象键（可选），用于基本形状验证
+ * @returns 解析后的对象或 fallback 值
+ */
 function safeJSONParse<T extends object>(text: string, fallback: T, expectedKeys?: string[]): T {
   try {
     const parsed = JSON.parse(extractJSON(text));
-    // Basic shape validation: if expectedKeys provided, check result is object with those keys
+    
+    // 基本形状验证：如果提供了 expectedKeys，检查结果是否为包含这些键的对象
     if (expectedKeys && (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))) {
       logger.warn("JSON 解析结果类型不符合预期，使用 fallback");
       return fallback;
     }
+    
     return parsed as T;
   } catch (e) {
     logger.error("JSON 解析失败:", e);
@@ -132,20 +199,44 @@ function safeJSONParse<T extends object>(text: string, fallback: T, expectedKeys
 
 // ==================== 节点定义 ====================
 
+/**
+ * 输入解析节点
+ * 
+ * 验证旅行请求参数是否存在，作为工作流的入口节点。
+ * 如果请求参数为空，设置错误状态并终止执行。
+ * 
+ * @param state 当前状态
+ * @returns 更新后的部分状态
+ */
 async function parseInput(state: typeof TripState.State): Promise<Partial<typeof TripState.State>> {
   logger.info("parse_input 开始");
+  
   const request = state.tripRequest;
   if (!request) {
     return { error: "缺少旅行请求参数", stage: "error" };
   }
+  
   return {
     messages: ["✅ 旅行请求解析完成"],
     stage: "parsed",
   };
 }
 
+/**
+ * 景点搜索节点
+ * 
+ * 调用高德 MCP 工具搜索目的地景点，并结合 LLM 生成结构化的景点列表。
+ * 搜索逻辑：
+ * 1. 获取 MCP 工具并调用关键词搜索
+ * 2. 将 MCP 返回的原始数据拼入 LLM context
+ * 3. 调用 LLM 生成符合 Attraction[] 格式的景点列表
+ * 
+ * @param state 当前状态
+ * @returns 更新后的部分状态（包含景点列表）
+ */
 async function searchAttractions(state: typeof TripState.State): Promise<Partial<typeof TripState.State>> {
   logger.info("search_attractions 开始");
+  
   const request = state.tripRequest;
   if (!request) return { error: "缺少请求", stage: "error" };
 
@@ -179,6 +270,7 @@ async function searchAttractions(state: typeof TripState.State): Promise<Partial
 
   const text = typeof response.content === "string" ? response.content : JSON.stringify(response.content);
   const attractions = safeJSONParse<Attraction[]>(text, []);
+  
   logger.info(`search_attractions 完成，共 ${attractions.length} 个景点`);
 
   return {
@@ -188,8 +280,17 @@ async function searchAttractions(state: typeof TripState.State): Promise<Partial
   };
 }
 
+/**
+ * 天气查询节点
+ * 
+ * 调用高德 MCP 天气工具获取目的地天气预报，并结合 LLM 生成结构化的天气信息。
+ * 
+ * @param state 当前状态
+ * @returns 更新后的部分状态（包含天气信息）
+ */
 async function queryWeather(state: typeof TripState.State): Promise<Partial<typeof TripState.State>> {
   logger.info("query_weather 开始");
+  
   const request = state.tripRequest;
   if (!request) return { error: "缺少请求", stage: "error" };
 
@@ -216,6 +317,7 @@ async function queryWeather(state: typeof TripState.State): Promise<Partial<type
 
   const text = typeof response.content === "string" ? response.content : JSON.stringify(response.content);
   const weather = safeJSONParse<WeatherInfo[]>(text, []);
+  
   logger.info(`query_weather 完成，共 ${weather.length} 天天气`);
 
   return {
@@ -225,8 +327,17 @@ async function queryWeather(state: typeof TripState.State): Promise<Partial<type
   };
 }
 
+/**
+ * 酒店搜索节点
+ * 
+ * 调用高德 MCP 工具搜索符合用户住宿偏好的酒店，并结合 LLM 生成结构化的酒店列表。
+ * 
+ * @param state 当前状态
+ * @returns 更新后的部分状态（包含酒店列表）
+ */
 async function searchHotels(state: typeof TripState.State): Promise<Partial<typeof TripState.State>> {
   logger.info("search_hotels 开始");
+  
   const request = state.tripRequest;
   if (!request) return { error: "缺少请求", stage: "error" };
 
@@ -256,6 +367,7 @@ async function searchHotels(state: typeof TripState.State): Promise<Partial<type
 
   const text = typeof response.content === "string" ? response.content : JSON.stringify(response.content);
   const hotels = safeJSONParse<Hotel[]>(text, []);
+  
   logger.info(`search_hotels 完成，共 ${hotels.length} 个酒店`);
 
   return {
@@ -265,8 +377,21 @@ async function searchHotels(state: typeof TripState.State): Promise<Partial<type
   };
 }
 
+/**
+ * 行程规划节点
+ * 
+ * 整合景点、酒店、天气信息，调用 LLM 生成完整的旅行计划。
+ * 采用多级降级策略：
+ * 1. 主 Planner：使用收集到的真实数据生成计划
+ * 2. Fallback Planner：如果主 Planner 失败，使用简化提示词重新生成
+ * 3. 硬编码降级：如果 LLM 完全失败，使用硬编码方案生成基础计划
+ * 
+ * @param state 当前状态
+ * @returns 更新后的部分状态（包含完整旅行计划）
+ */
 async function planItinerary(state: typeof TripState.State): Promise<Partial<typeof TripState.State>> {
   logger.info("plan_itinerary 开始");
+  
   const request = state.tripRequest;
   if (!request) return { error: "缺少请求", stage: "error" };
 
@@ -329,8 +454,19 @@ async function planItinerary(state: typeof TripState.State): Promise<Partial<typ
   };
 }
 
+/**
+ * 输出格式化节点
+ * 
+ * 完成旅行计划的最后处理，主要功能：
+ * 1. 如果预算字段为空，自动计算预算明细
+ * 2. 设置完成状态
+ * 
+ * @param state 当前状态
+ * @returns 更新后的部分状态（包含格式化后的计划）
+ */
 async function formatOutput(state: typeof TripState.State): Promise<Partial<typeof TripState.State>> {
   logger.info("format_output 开始");
+  
   const tripPlan = state.tripPlan;
 
   if (!tripPlan) {
@@ -369,6 +505,16 @@ async function formatOutput(state: typeof TripState.State): Promise<Partial<type
 
 // ==================== 硬编码降级方案 ====================
 
+/**
+ * 生成硬编码的旅行计划（降级方案）
+ * 
+ * 当所有 AI 生成方案都失败时，使用此函数生成一个基础的旅行计划。
+ * 确保系统在任何情况下都能返回可用的旅行计划。
+ * 
+ * @param request 旅行请求参数
+ * @param weather 天气信息列表
+ * @returns 硬编码生成的旅行计划
+ */
 function generateHardcodedPlan(request: TripRequest, weather: WeatherInfo[]): TripPlan {
   const cityCoord = getCityCoord(request.city);
   const days = [];
@@ -450,10 +596,25 @@ function generateHardcodedPlan(request: TripRequest, weather: WeatherInfo[]): Tr
 
 // ==================== 构建 LangGraph 工作流（模块级单例） ====================
 
+/** 编译后的图类型定义 */
 type CompiledGraph = { invoke: (input: typeof INITIAL_STATE_TEMPLATE) => Promise<typeof INITIAL_STATE_TEMPLATE> };
 
+/** 编译后的图实例缓存 */
 let compiledGraph: CompiledGraph | null = null;
 
+/**
+ * 创建旅行规划工作流图
+ * 
+ * 工作流架构：
+ * START -> parse_input -> [并行执行] search_attractions + query_weather + search_hotels -> plan_itinerary -> format_output -> END
+ * 
+ * 特点：
+ * 1. 三个搜索节点并行执行，提升效率
+ * 2. 所有搜索完成后才进行行程规划
+ * 3. 完整的错误处理和降级机制
+ * 
+ * @returns 编译后的状态机图
+ */
 function createTripGraph() {
   const workflow = new StateGraph(TripState)
     .addNode("parse_input", parseInput)
@@ -485,6 +646,11 @@ function createTripGraph() {
   return workflow.compile() as CompiledGraph;
 }
 
+/**
+ * 获取工作流图实例（单例模式）
+ * 
+ * @returns 编译后的状态机图实例
+ */
 function getGraph() {
   if (!compiledGraph) {
     compiledGraph = createTripGraph();
@@ -494,6 +660,7 @@ function getGraph() {
 
 // ==================== 便捷运行函数 ====================
 
+/** 初始状态模板 */
 const INITIAL_STATE_TEMPLATE = {
   tripRequest: null as TripRequest | null,
   messages: [] as string[],
@@ -505,6 +672,15 @@ const INITIAL_STATE_TEMPLATE = {
   stage: "idle",
 };
 
+/**
+ * 执行旅行规划的便捷函数
+ * 
+ * 封装完整的工作流执行逻辑，对外提供简洁的 API。
+ * 
+ * @param request 旅行请求参数
+ * @returns 生成的旅行计划
+ * @throws 如果执行失败或超时，抛出错误
+ */
 export async function runTripPlan(request: TripRequest): Promise<TripPlan> {
   logger.info(`开始规划旅行: ${request.city}, ${request.travelDays}天`);
 
@@ -527,5 +703,3 @@ export async function runTripPlan(request: TripRequest): Promise<TripPlan> {
 
   return result.tripPlan;
 }
-
-

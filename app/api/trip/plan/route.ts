@@ -7,9 +7,32 @@ import { createLogger } from "@/lib/logger";
 import { closeMCPClient } from "@/lib/mcp-client";
 import type { ApiResponse } from "@/types";
 
+/** 日志记录器实例 */
 const logger = createLogger("API:plan");
-const PLAN_TIMEOUT_MS = 120_000; // 120 秒超时
 
+/** 请求超时时间：120秒 */
+const PLAN_TIMEOUT_MS = 120_000;
+
+/**
+ * POST /api/trip/plan - 创建旅行计划
+ * 
+ * 接收用户的旅行请求参数，调用 LangGraph 工作流生成完整的旅行计划。
+ * 
+ * 请求体结构：
+ * {
+ *   city: string,           // 目的地城市
+ *   startDate: string,      // 出发日期 (YYYY-MM-DD)
+ *   endDate: string,        // 结束日期 (YYYY-MM-DD)
+ *   travelDays: number,     // 旅行天数
+ *   transportation: string, // 交通方式
+ *   accommodation: string,  // 住宿偏好
+ *   preferences: string[],  // 旅行偏好列表
+ *   freeTextInput?: string  // 额外要求（可选）
+ * }
+ * 
+ * @param request NextRequest 对象
+ * @returns ApiResponse 包含 sessionId 和旅行计划
+ */
 export async function POST(request: NextRequest) {
   const startTime = Date.now();
   logger.info("POST /api/trip/plan 收到请求");
@@ -25,7 +48,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  // Zod 校验
+  // Zod 参数校验
   const parsed = tripRequestSchema.safeParse(body);
   if (!parsed.success) {
     const response: ApiResponse<null> = {
@@ -39,13 +62,16 @@ export async function POST(request: NextRequest) {
   const tripRequest = parsed.data;
   const sessionId = generateSessionId();
 
-  // 超时控制：120 秒后若未完成则返回 504
+  // 超时控制：120秒后若未完成则返回 504
   const timeoutPromise = new Promise<never>((_, reject) =>
     setTimeout(() => reject(new Error("TIMEOUT")), PLAN_TIMEOUT_MS)
   );
 
   try {
+    // 并行执行：旅行规划和超时检测
     const tripPlan = await Promise.race([runTripPlan(tripRequest), timeoutPromise]);
+    
+    // 保存到内存存储
     saveTripPlan(sessionId, tripPlan);
 
     const elapsed = Date.now() - startTime;
@@ -60,6 +86,7 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     const elapsed = Date.now() - startTime;
 
+    // 处理超时错误
     if (error instanceof Error && error.message === "TIMEOUT") {
       logger.error(`旅行计划生成超时，耗时 ${elapsed}ms`);
       return NextResponse.json(
@@ -68,6 +95,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // 处理其他错误
     logger.error("旅行计划生成失败:", error);
     return NextResponse.json(
       {
