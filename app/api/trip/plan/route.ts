@@ -1,11 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { runTripPlan } from "@/lib/graph/trip-graph";
-import { saveTripPlan } from "@/lib/store";
+import { runTripPlan } from "@/lib/graph";
+import { saveTripPlan } from "@/lib/infra/store";
 import { generateSessionId } from "@/lib/utils";
 import { tripRequestSchema } from "@/types";
-import { createLogger } from "@/lib/logger";
-import { closeMCPClient } from "@/lib/mcp-client";
+import { createLogger } from "@/lib/infra/logger";
+import { closeMCPClient } from "@/lib/infra/mcp-client";
 import type { ApiResponse } from "@/types";
+
+/** Next.js Serverless 函数最大执行时长（秒），与客户端超时保持一致 */
+export const maxDuration = 120;
 
 /** 日志记录器实例 */
 const logger = createLogger("API:plan");
@@ -76,6 +79,13 @@ export async function POST(request: NextRequest) {
 
     const elapsed = Date.now() - startTime;
     logger.info(`旅行计划生成完成，sessionId=${sessionId}，耗时 ${elapsed}ms`);
+
+    logger.info(`规划完成 token统计`, {
+      sessionId,
+      city: tripPlan.city,
+      days: tripPlan.days.length,
+      elapsed: `${elapsed}ms`,
+    });
 
     const response: ApiResponse<{ sessionId: string; plan: typeof tripPlan }> = {
       success: true,

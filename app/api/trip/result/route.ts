@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getTripPlan } from "@/lib/store";
-import { createLogger } from "@/lib/logger";
+import { getTripPlan } from "@/lib/infra/store";
+import { createLogger } from "@/lib/infra/logger";
 import type { ApiResponse, TripPlan } from "@/types";
 
 /** 日志记录器实例 */
