@@ -226,3 +226,40 @@ export const tripRequestSchema = z.object({
   preferences: z.array(z.string()).min(1, "请至少选择一个旅行偏好"),
   freeTextInput: z.string().optional(),
 });
+
+// ==================== AMap 类型定义（最小化） ====================
+
+/** AMap 坐标点 [经度, 纬度] */
+export type AMapLngLat = [number, number];
+
+/** AMap Pixel 像素点 */
+export interface AMapPixel {
+  x: number;
+  y: number;
+}
+
+/** AMap Marker 标记 */
+export interface AMapMarker {
+  on(event: string, handler: () => void): void;
+  getPosition(): AMapLngLat;
+}
+
+/** AMap InfoWindow 信息窗口 */
+export interface AMapInfoWindow {
+  open(map: AMapMap, position: AMapLngLat): void;
+}
+
+/** AMap Map 地图实例 */
+export interface AMapMap {
+  add(marker: AMapMarker): void;
+  setFitView(...args: unknown[]): void;
+  destroy(): void;
+}
+
+/** AMap 命名空间 */
+export interface AMapNamespace {
+  Map: new (container: HTMLElement, opts: Record<string, unknown>) => AMapMap;
+  Marker: new (opts: Record<string, unknown>) => AMapMarker;
+  InfoWindow: new (opts: Record<string, unknown>) => AMapInfoWindow;
+  Pixel: new (x: number, y: number) => AMapPixel;
+}

@@ -97,9 +97,9 @@ export function TripForm() {
     setError("");
     setLoading(true);
 
-    // 请求超时控制：60 秒
+    // 请求超时控制：120 秒（与服务端 maxDuration 保持一致）
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 60_000);
+    const timeoutId = setTimeout(() => controller.abort(), 120_000);
 
     try {
       const response = await fetch("/api/trip/plan", {

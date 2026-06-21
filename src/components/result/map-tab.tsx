@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { TripPlan } from "@/types";
+import type { AMapNamespace, AMapMap } from "@/types";
 import { motion } from "framer-motion";
 import { LoadingSpinner } from "@/components/shared/loading-spinner";
 import { MapPin } from "lucide-react";
@@ -14,26 +15,30 @@ interface MapTabProps {
 
 declare global {
   interface Window {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    AMap: any;
+    AMap: AMapNamespace;
     _AMapSecurityConfig: { securityJsCode: string };
   }
 }
 
 export function MapTab({ plan, selectedDay, onDayChange }: MapTabProps) {
   const mapRef = useRef<HTMLDivElement>(null);
-  const [mapLoaded, setMapLoaded] = useState(false);
-  const [mapError, setMapError] = useState(false);
+  const [mapLoaded, setMapLoaded] = useState(() => {
+    try {
+      return typeof window !== "undefined" && !!window.AMap;
+    } catch {
+      return false;
+    }
+  });
+  const [mapError, setMapError] = useState(!process.env.NEXT_PUBLIC_AMAP_JS_KEY);
+  const mapInstanceRef = useRef<AMapMap | null>(null);
 
   useEffect(() => {
     const jsKey = process.env.NEXT_PUBLIC_AMAP_JS_KEY;
     if (!jsKey) {
-      setMapError(true);
       return;
     }
 
     if (window.AMap) {
-      setMapLoaded(true);
       return;
     }
 
@@ -57,6 +62,12 @@ export function MapTab({ plan, selectedDay, onDayChange }: MapTabProps) {
     const day = plan.days[selectedDay];
     if (!day || day.attractions.length === 0) return;
 
+    // 销毁旧地图实例
+    if (mapInstanceRef.current) {
+      mapInstanceRef.current.destroy();
+      mapInstanceRef.current = null;
+    }
+
     const allPoints = day.attractions.map((a) => [a.location.longitude, a.location.latitude]);
 
     const map = new window.AMap.Map(mapRef.current, {
@@ -64,6 +75,7 @@ export function MapTab({ plan, selectedDay, onDayChange }: MapTabProps) {
       center: allPoints[0] as [number, number],
       mapStyle: "amap://styles/dark",
     });
+    mapInstanceRef.current = map;
 
     day.attractions.forEach((attraction, i) => {
       const content = `<div style="background: linear-gradient(135deg, #FF6B35, #FF8C42); color: white; width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; box-shadow: 0 2px 12px rgba(255,107,53,0.5);">${i + 1}</div>`;
@@ -90,6 +102,7 @@ export function MapTab({ plan, selectedDay, onDayChange }: MapTabProps) {
 
     return () => {
       map.destroy();
+      mapInstanceRef.current = null;
     };
   }, [mapLoaded, selectedDay, plan.days, mapError]);
 
